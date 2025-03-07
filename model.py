@@ -29,8 +29,8 @@ from cosyvoice.utils.common import fade_in_out
 from cosyvoice.utils.file_utils import convert_onnx_to_trt
 
 # 启用vllm V1版本
-os.environ["VLLM_USE_V1"] = '1'
-from vllm import  AsyncLLMEngine
+os.environ["VLLM_USE_V1"] = "1"
+from vllm import AsyncLLMEngine
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.sampling_params import SamplingParams
 
@@ -38,21 +38,23 @@ from vllm import ModelRegistry
 from async_cosyvoice.config import ENGINE_ARGS, SAMPLING_PARAMS
 
 from async_cosyvoice.vllm_use_cosyvoice2_model import CosyVoice2Model as CosyVoice2LLM
-ModelRegistry.register_model("CosyVoice2Model", CosyVoice2LLM)
 
+ModelRegistry.register_model("CosyVoice2Model", CosyVoice2LLM)
 
 
 def tensor_to_list(tensor: torch.tensor):
     return tensor.view(-1).cpu().numpy().tolist()
 
+
 class CosyVoice2Model:
 
-    def __init__(self,
-         model_dir: str,
-         flow: CausalMaskedDiffWithXvec | torch.nn.Module,
-         hift: HiFTGenerator | torch.nn.Module,
-         fp16: bool,
-         mix_ratio: List[int] = None,
+    def __init__(
+        self,
+        model_dir: str,
+        flow: CausalMaskedDiffWithXvec | torch.nn.Module,
+        hift: HiFTGenerator | torch.nn.Module,
+        fp16: bool,
+        mix_ratio: List[int] = None,
     ):
         # vllm engine 的参数配置
         engine_args = AsyncEngineArgs(
@@ -61,7 +63,7 @@ class CosyVoice2Model:
         )
         self.llm_engine: AsyncLLMEngine = AsyncLLMEngine.from_engine_args(engine_args)
         self.thread_executor = ThreadPoolExecutor(max_workers=10)
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.flow = flow
         self.hift = hift
         self.fp16 = fp16
@@ -71,7 +73,9 @@ class CosyVoice2Model:
         self.token_hop_len = 2 * self.flow.input_frame_rate
         # here we fix flow encoder/decoder decoding_chunk_size, in the future we will send it as arguments, or use cache
         self.flow.encoder.static_chunk_size = 2 * self.flow.input_frame_rate
-        self.flow.decoder.estimator.static_chunk_size = 2 * self.flow.input_frame_rate * self.flow.token_mel_ratio
+        self.flow.decoder.estimator.static_chunk_size = (
+            2 * self.flow.input_frame_rate * self.flow.token_mel_ratio
+        )
         # hift cache
         self.mel_cache_len = 8
         self.source_cache_len = int(self.mel_cache_len * 480)
@@ -79,7 +83,11 @@ class CosyVoice2Model:
         self.speech_window = np.hamming(2 * self.source_cache_len)
         # rtf and decoding related
         self.stream_scale_factor = 1
-        self.llm_context = torch.cuda.stream(torch.cuda.Stream(self.device)) if torch.cuda.is_available() else nullcontext()
+        self.llm_context = (
+            torch.cuda.stream(torch.cuda.Stream(self.device))
+            if torch.cuda.is_available()
+            else nullcontext()
+        )
 
         self.mix_ratio = mix_ratio or [5, 15]
 
@@ -98,10 +106,18 @@ class CosyVoice2Model:
         self.zero_token_id = self.task_token_id + 1
 
     def load(self, flow_model, hift_model):
-        self.flow.load_state_dict(torch.load(flow_model, weights_only=True, map_location=self.device), strict=True)
+        self.flow.load_state_dict(
+            torch.load(flow_model, weights_only=True, map_location=self.device),
+            strict=True,
+        )
         self.flow.to(self.device).eval()
         # in case hift_model is a hifigan model
-        hift_state_dict = {k.replace('generator.', ''): v for k, v in torch.load(hift_model, weights_only=True, map_location=self.device).items()}
+        hift_state_dict = {
+            k.replace("generator.", ""): v
+            for k, v in torch.load(
+                hift_model, weights_only=True, map_location=self.device
+            ).items()
+        }
         self.hift.load_state_dict(hift_state_dict, strict=True)
         self.hift.to(self.device).eval()
 
@@ -110,18 +126,31 @@ class CosyVoice2Model:
         self.flow.encoder = flow_encoder
 
     def load_trt(self, flow_decoder_estimator_model, flow_decoder_onnx_model, fp16):
-        assert torch.cuda.is_available(), 'tensorrt only supports gpu!'
+        assert torch.cuda.is_available(), "tensorrt only supports gpu!"
         if not os.path.exists(flow_decoder_estimator_model):
-            convert_onnx_to_trt(flow_decoder_estimator_model, flow_decoder_onnx_model, fp16)
+            convert_onnx_to_trt(
+                flow_decoder_estimator_model, flow_decoder_onnx_model, fp16
+            )
         if os.path.getsize(flow_decoder_estimator_model) == 0:
-            raise ValueError('{} is empty file, delete it and export again!'.format(flow_decoder_estimator_model))
+            raise ValueError(
+                "{} is empty file, delete it and export again!".format(
+                    flow_decoder_estimator_model
+                )
+            )
         del self.flow.decoder.estimator
         import tensorrt as trt
-        with open(flow_decoder_estimator_model, 'rb') as f:
-            self.flow.decoder.estimator_engine = trt.Runtime(trt.Logger(trt.Logger.INFO)).deserialize_cuda_engine(f.read())
+
+        with open(flow_decoder_estimator_model, "rb") as f:
+            self.flow.decoder.estimator_engine = trt.Runtime(
+                trt.Logger(trt.Logger.INFO)
+            ).deserialize_cuda_engine(f.read())
         if self.flow.decoder.estimator_engine is None:
-            raise ValueError('failed to load trt {}'.format(flow_decoder_estimator_model))
-        self.flow.decoder.estimator = self.flow.decoder.estimator_engine.create_execution_context()
+            raise ValueError(
+                "failed to load trt {}".format(flow_decoder_estimator_model)
+            )
+        self.flow.decoder.estimator = (
+            self.flow.decoder.estimator_engine.create_execution_context()
+        )
         # TODO: 如何限制内存
         # 启动后会占用较多显存
         # [TRT] [I] Loaded engine size: 158 MiB
@@ -132,10 +161,22 @@ class CosyVoice2Model:
         # [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +4545, now: CPU 0, GPU 4681 (MiB)
         # 该代码无法正常执行 self.flow.decoder.estimator.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)   # 1GB
 
-    async def llm_inference(self, prompt_token_ids: List[int], request_id: str=None, stop_token_ids=None, max_tokens=None):
-        assert isinstance(prompt_token_ids, list) , "prompt_token_ids should be List[int]"
-        invalid = next((i for i, x in enumerate(prompt_token_ids) if not isinstance(x, int)), None)
-        assert invalid is None, f"Error in prompt_token_ids, Non-int element at index {invalid}: {prompt_token_ids[invalid]}"
+    async def llm_inference(
+        self,
+        prompt_token_ids: List[int],
+        request_id: str = None,
+        stop_token_ids=None,
+        max_tokens=None,
+    ):
+        assert isinstance(
+            prompt_token_ids, list
+        ), "prompt_token_ids should be List[int]"
+        invalid = next(
+            (i for i, x in enumerate(prompt_token_ids) if not isinstance(x, int)), None
+        )
+        assert (
+            invalid is None
+        ), f"Error in prompt_token_ids, Non-int element at index {invalid}: {prompt_token_ids[invalid]}"
         # logging.debug('prompt_token_ids:', prompt_token_ids)
         # TODO: 增加上下文控制，取消请求时
         sampling_params = SamplingParams(**SAMPLING_PARAMS)
@@ -143,16 +184,17 @@ class CosyVoice2Model:
         if max_tokens:
             sampling_params.max_tokens = max_tokens
         async for output in self.llm_engine.generate(
-                {
-                    "prompt_token_ids": prompt_token_ids,
-                },
-                sampling_params=sampling_params,
-                request_id=request_id or f"{time.time()}",
+            {
+                "prompt_token_ids": prompt_token_ids,
+            },
+            sampling_params=sampling_params,
+            request_id=request_id or f"{time.time()}",
         ):
             yield output.outputs[0]
 
-
-    async def llm_job(self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid):
+    async def llm_job(
+        self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid
+    ):
         prompt_text = tensor_to_list(prompt_text + torch.tensor(6564))
         llm_prompt_speech_token = tensor_to_list(llm_prompt_speech_token)
 
@@ -168,27 +210,39 @@ class CosyVoice2Model:
                 text_tokens_cache += this_text
                 while len(llm_prompt_speech_token) != 0:
                     if len(text_tokens_cache) >= self.mix_ratio[0]:
-                        text_input_token = text_tokens_cache[:self.mix_ratio[0]]
-                        speech_input_token = llm_prompt_speech_token[:self.mix_ratio[1]]
+                        text_input_token = text_tokens_cache[: self.mix_ratio[0]]
+                        speech_input_token = llm_prompt_speech_token[
+                            : self.mix_ratio[1]
+                        ]
                         prompt_token_ids += text_input_token + speech_input_token
                         # reset the last cache
-                        text_tokens_cache = text_tokens_cache[self.mix_ratio[0]:]
-                        llm_prompt_speech_token = llm_prompt_speech_token[self.mix_ratio[1]:]
+                        text_tokens_cache = text_tokens_cache[self.mix_ratio[0] :]
+                        llm_prompt_speech_token = llm_prompt_speech_token[
+                            self.mix_ratio[1] :
+                        ]
                     else:
-                        logging.info('not enough text token to decode, wait for more')
+                        logging.info("not enough text token to decode, wait for more")
                         break
                 if len(llm_prompt_speech_token) == 0:
-                    if (len(last_tokens) > 0 and last_tokens[-1] == 6563) or len(prompt_token_ids) == 1:
-                        logging.info('get fill token, need to append more text token')
+                    if (len(last_tokens) > 0 and last_tokens[-1] == 6563) or len(
+                        prompt_token_ids
+                    ) == 1:
+                        logging.info("get fill token, need to append more text token")
                         if len(text_tokens_cache) >= self.mix_ratio[0]:
-                            text_tokens_temp = text_tokens_cache[:self.mix_ratio[0]]
+                            text_tokens_temp = text_tokens_cache[: self.mix_ratio[0]]
                             prompt_token_ids += text_tokens_temp
-                            logging.info('append {} text token'.format(len(text_tokens_temp)))
-                            text_tokens_cache = text_tokens_cache[self.mix_ratio[0]:]
+                            logging.info(
+                                "append {} text token".format(len(text_tokens_temp))
+                            )
+                            text_tokens_cache = text_tokens_cache[self.mix_ratio[0] :]
                         else:
-                            logging.info('not enough text token to decode, wait for more')
+                            logging.info(
+                                "not enough text token to decode, wait for more"
+                            )
                             continue
-                    async for output in self.llm_inference(prompt_token_ids, request_id=uuid, stop_token_ids=[6563]):
+                    async for output in self.llm_inference(
+                        prompt_token_ids, request_id=uuid, stop_token_ids=[6563]
+                    ):
                         last_tokens = output.token_ids
                         if last_tokens[-1] == 6563:
                             need_add_tokens = last_tokens[:-1]
@@ -197,8 +251,10 @@ class CosyVoice2Model:
                         self.tts_speech_token_dict[uuid].extend(need_add_tokens)
                         prompt_token_ids.extend(need_add_tokens)
             prompt_token_ids += text_tokens_cache + [self.task_token_id]
-            logging.info('no more text token, decode until met eos')
-            async for output in self.llm_inference(prompt_token_ids, request_id=uuid, stop_token_ids=[6561]):
+            logging.info("no more text token, decode until met eos")
+            async for output in self.llm_inference(
+                prompt_token_ids, request_id=uuid, stop_token_ids=[6561]
+            ):
                 if output.token_ids[-1] == 6561:
                     need_add_tokens = output.token_ids[:-1]
                 else:
@@ -206,14 +262,19 @@ class CosyVoice2Model:
                 self.tts_speech_token_dict[uuid].extend(need_add_tokens)
         else:
             text = tensor_to_list(text + torch.tensor(6564))
-            prompt_token_ids = [self.sos_eos_token_id] + prompt_text + text + \
-                               [self.task_token_id] + llm_prompt_speech_token
+            prompt_token_ids = (
+                [self.sos_eos_token_id]
+                + prompt_text
+                + text
+                + [self.task_token_id]
+                + llm_prompt_speech_token
+            )
             max_tokens = len(text) * 20
             async for output in self.llm_inference(
-                    prompt_token_ids,
-                    request_id=uuid,
-                    stop_token_ids=[6561],
-                    max_tokens=max_tokens,
+                prompt_token_ids,
+                request_id=uuid,
+                stop_token_ids=[6561],
+                max_tokens=max_tokens,
             ):
                 if output.token_ids[-1] == 6561:
                     need_add_tokens = output.token_ids[:-1]
@@ -222,50 +283,92 @@ class CosyVoice2Model:
                 self.tts_speech_token_dict[uuid].extend(need_add_tokens)
 
         self.llm_end_dict[uuid] = True
-        logging.info(f'llm job done, time cost: {time.time() - start_time:.3f}s')
-        logging.debug(f'speech_tokens: len: {len(self.tts_speech_token_dict[uuid])}  data: {self.tts_speech_token_dict[uuid]}')
+        logging.info(f"llm job done, time cost: {time.time() - start_time:.3f}s")
+        logging.debug(
+            f"speech_tokens: len: {len(self.tts_speech_token_dict[uuid])}  data: {self.tts_speech_token_dict[uuid]}"
+        )
         # 记录 prompt_token_ids self.tts_speech_token_dict[uuid] 数据用于后续的训练，与flow推理测试
 
-
-    def token2wav(self, token, prompt_token, prompt_feat, embedding, uuid, token_offset, finalize=False, speed=1.0):
-        tts_mel, _ = self.flow.inference(token=token.to(self.device),
-                                         token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(self.device),
-                                         prompt_token=prompt_token.to(self.device),
-                                         prompt_token_len=torch.tensor([prompt_token.shape[1]], dtype=torch.int32).to(self.device),
-                                         prompt_feat=prompt_feat.to(self.device),
-                                         prompt_feat_len=torch.tensor([prompt_feat.shape[1]], dtype=torch.int32).to(self.device),
-                                         embedding=embedding.to(self.device),
-                                         finalize=finalize)
-        tts_mel = tts_mel[:, :, token_offset * self.flow.token_mel_ratio:]
+    def token2wav(
+        self,
+        token,
+        prompt_token,
+        prompt_feat,
+        embedding,
+        uuid,
+        token_offset,
+        finalize=False,
+        speed=1.0,
+    ):
+        tts_mel, _ = self.flow.inference(
+            token=token.to(self.device),
+            token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(self.device),
+            prompt_token=prompt_token.to(self.device),
+            prompt_token_len=torch.tensor(
+                [prompt_token.shape[1]], dtype=torch.int32
+            ).to(self.device),
+            prompt_feat=prompt_feat.to(self.device),
+            prompt_feat_len=torch.tensor([prompt_feat.shape[1]], dtype=torch.int32).to(
+                self.device
+            ),
+            embedding=embedding.to(self.device),
+            finalize=finalize,
+        )
+        tts_mel = tts_mel[:, :, token_offset * self.flow.token_mel_ratio :]
         # append hift cache
         if self.hift_cache_dict[uuid] is not None:
-            hift_cache_mel, hift_cache_source = self.hift_cache_dict[uuid]['mel'], self.hift_cache_dict[uuid]['source']
+            hift_cache_mel, hift_cache_source = (
+                self.hift_cache_dict[uuid]["mel"],
+                self.hift_cache_dict[uuid]["source"],
+            )
             tts_mel = torch.concat([hift_cache_mel, tts_mel], dim=2)
         else:
             hift_cache_source = torch.zeros(1, 1, 0)
         # keep overlap mel and hift cache
         if finalize is False:
-            tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+            tts_speech, tts_source = self.hift.inference(
+                speech_feat=tts_mel, cache_source=hift_cache_source
+            )
             if self.hift_cache_dict[uuid] is not None:
-                tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
-            self.hift_cache_dict[uuid] = {'mel': tts_mel[:, :, -self.mel_cache_len:],
-                                          'source': tts_source[:, :, -self.source_cache_len:],
-                                          'speech': tts_speech[:, -self.source_cache_len:]}
-            tts_speech = tts_speech[:, :-self.source_cache_len]
+                tts_speech = fade_in_out(
+                    tts_speech, self.hift_cache_dict[uuid]["speech"], self.speech_window
+                )
+            self.hift_cache_dict[uuid] = {
+                "mel": tts_mel[:, :, -self.mel_cache_len :],
+                "source": tts_source[:, :, -self.source_cache_len :],
+                "speech": tts_speech[:, -self.source_cache_len :],
+            }
+            tts_speech = tts_speech[:, : -self.source_cache_len]
         else:
             if speed != 1.0:
-                assert self.hift_cache_dict[uuid] is None, 'speed change only support non-stream inference mode'
-                tts_mel = F.interpolate(tts_mel, size=int(tts_mel.shape[2] / speed), mode='linear')
-            tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
+                assert (
+                    self.hift_cache_dict[uuid] is None
+                ), "speed change only support non-stream inference mode"
+                tts_mel = F.interpolate(
+                    tts_mel, size=int(tts_mel.shape[2] / speed), mode="linear"
+                )
+            tts_speech, tts_source = self.hift.inference(
+                speech_feat=tts_mel, cache_source=hift_cache_source
+            )
             if self.hift_cache_dict[uuid] is not None:
-                tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
+                tts_speech = fade_in_out(
+                    tts_speech, self.hift_cache_dict[uuid]["speech"], self.speech_window
+                )
         return tts_speech
 
-    async def async_tts(self, text, flow_embedding, llm_embedding=torch.zeros(0, 192),
-            prompt_text=torch.zeros(1, 0, dtype=torch.int32),
-            llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
-            flow_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
-            prompt_speech_feat=torch.zeros(1, 0, 80), stream=False, speed=1.0, **kwargs):
+    async def async_tts(
+        self,
+        text,
+        flow_embedding,
+        llm_embedding=torch.zeros(0, 192),
+        prompt_text=torch.zeros(1, 0, dtype=torch.int32),
+        llm_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
+        flow_prompt_speech_token=torch.zeros(1, 0, dtype=torch.int32),
+        prompt_speech_feat=torch.zeros(1, 0, 80),
+        stream=False,
+        speed=1.0,
+        **kwargs,
+    ):
         # this_uuid is used to track variables related to this inference thread
         this_uuid = str(uuid.uuid1())
         async with self.lock:
@@ -273,42 +376,62 @@ class CosyVoice2Model:
             self.llm_end_dict[this_uuid] = False
             self.hift_cache_dict[this_uuid] = None
         # queue: asyncio.Queue[int|None] = asyncio.Queue()
-        llm_task = asyncio.create_task(self.llm_job(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid))
+        llm_task = asyncio.create_task(
+            self.llm_job(
+                text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid
+            )
+        )
         if stream is True:
             token_offset = 0
-            peer_chunk_token_num = 15     # 设置初始的每个chunk处理语音token的数量
+            peer_chunk_token_num = 15  # 设置初始的每个chunk处理语音token的数量
             await asyncio.sleep(0.05)
             loop = asyncio.get_event_loop()
             start_time = time.time()
             chunk_index = 0
             while True:
-                if (pending_num:= len(self.tts_speech_token_dict[this_uuid]) - token_offset) >= (peer_chunk_token_num + self.flow.pre_lookahead_len):
-                    this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][:token_offset + peer_chunk_token_num + self.flow.pre_lookahead_len]).unsqueeze(dim=0)
-                    this_tts_speech = await loop.run_in_executor(self.thread_executor,
+                if (
+                    pending_num := len(self.tts_speech_token_dict[this_uuid])
+                    - token_offset
+                ) >= (peer_chunk_token_num + self.flow.pre_lookahead_len):
+                    this_tts_speech_token = torch.tensor(
+                        self.tts_speech_token_dict[this_uuid][
+                            : token_offset
+                            + peer_chunk_token_num
+                            + self.flow.pre_lookahead_len
+                        ]
+                    ).unsqueeze(dim=0)
+                    this_tts_speech = await loop.run_in_executor(
+                        self.thread_executor,
                         self.token2wav,
                         this_tts_speech_token,
-                            flow_prompt_speech_token,
-                            prompt_speech_feat,
-                            flow_embedding,
-                            this_uuid,
-                            token_offset,
-                            False
+                        flow_prompt_speech_token,
+                        prompt_speech_feat,
+                        flow_embedding,
+                        this_uuid,
+                        token_offset,
+                        False,
                     )
                     token_offset += peer_chunk_token_num
-                    yield {'tts_speech': this_tts_speech.cpu()}
+                    yield {"tts_speech": this_tts_speech.cpu()}
                     chunk_index += 1
                     cost_time = time.time() - start_time
                     # 动态增大 peer_chunk_token_num，以减少调用 token2wav 的次数
-                    duration = token_offset/self.flow.input_frame_rate
-                    if (multiples:= (duration - cost_time)/(cost_time/chunk_index)) > 4:
-                        if self.llm_end_dict[this_uuid] is True:   # 直接一次性推理 token2wav 返回剩余的语音
+                    duration = token_offset / self.flow.input_frame_rate
+                    if (
+                        multiples := (duration - cost_time) / (cost_time / chunk_index)
+                    ) > 4:
+                        if (
+                            self.llm_end_dict[this_uuid] is True
+                        ):  # 直接一次性推理 token2wav 返回剩余的语音
                             break
                         else:
                             # 有较多的计算时间，还可以等待llm生成更多的token，用于下次 token2wav 推理
                             peer_chunk_token_num = (pending_num // 15 + 1) * 15
                     elif multiples > 2:
                         peer_chunk_token_num = (pending_num // 15) * 15
-                    logging.debug(f'multiples: {multiples:.2f}, peer_chunk_token_num: {peer_chunk_token_num}')
+                    logging.debug(
+                        f"multiples: {multiples:.2f}, peer_chunk_token_num: {peer_chunk_token_num}"
+                    )
                 else:
                     if self.llm_end_dict[this_uuid] is True:
                         break
@@ -316,38 +439,46 @@ class CosyVoice2Model:
                         await asyncio.sleep(0.02)
             await llm_task
             # deal with remain tokens, make sure inference remain token len equals token_hop_len when cache_speech is not None
-            this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
-            this_tts_speech = await loop.run_in_executor(self.thread_executor,
-                                                         self.token2wav,
-                                                         this_tts_speech_token,
-                                                         flow_prompt_speech_token,
-                                                         prompt_speech_feat,
-                                                         flow_embedding,
-                                                         this_uuid,
-                                                         token_offset,
-                                                         True,
-                                                         )
+            this_tts_speech_token = torch.tensor(
+                self.tts_speech_token_dict[this_uuid]
+            ).unsqueeze(dim=0)
+            this_tts_speech = await loop.run_in_executor(
+                self.thread_executor,
+                self.token2wav,
+                this_tts_speech_token,
+                flow_prompt_speech_token,
+                prompt_speech_feat,
+                flow_embedding,
+                this_uuid,
+                token_offset,
+                True,
+            )
             if this_tts_speech.shape[1] == 0:
-                logging.debug(f'no tts_speech_token shape: {this_tts_speech.shape}, data: {this_tts_speech}')
+                logging.debug(
+                    f"no tts_speech_token shape: {this_tts_speech.shape}, data: {this_tts_speech}"
+                )
                 return
-            yield {'tts_speech': this_tts_speech.cpu()}
+            yield {"tts_speech": this_tts_speech.cpu()}
         else:
             # deal with all tokens
             await llm_task
-            this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
+            this_tts_speech_token = torch.tensor(
+                self.tts_speech_token_dict[this_uuid]
+            ).unsqueeze(dim=0)
             loop = asyncio.get_event_loop()
-            this_tts_speech = await loop.run_in_executor(self.thread_executor,
-                                                         self.token2wav,
-                                                         this_tts_speech_token,
-                                                         flow_prompt_speech_token,
-                                                         prompt_speech_feat,
-                                                         flow_embedding,
-                                                         this_uuid,
-                                                         0,
-                                                         True,
-                                                         speed,
-                                                         )
-            yield {'tts_speech': this_tts_speech.cpu()}
+            this_tts_speech = await loop.run_in_executor(
+                self.thread_executor,
+                self.token2wav,
+                this_tts_speech_token,
+                flow_prompt_speech_token,
+                prompt_speech_feat,
+                flow_embedding,
+                this_uuid,
+                0,
+                True,
+                speed,
+            )
+            yield {"tts_speech": this_tts_speech.cpu()}
         async with self.lock:
             self.tts_speech_token_dict.pop(this_uuid)
             self.llm_end_dict.pop(this_uuid)

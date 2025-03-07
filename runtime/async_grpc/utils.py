@@ -14,14 +14,20 @@ import torchaudio
 #     """同步Tensor转字节方法"""
 #     return (tensor.numpy() * (2 ** 15)).astype(np.int16).tobytes()
 
+
 # --------------------------
 # 移除音频数据的转换，直接使用传递 float32 数据
 # --------------------------
 def convert_audio_bytes_to_tensor(raw_audio: bytes) -> torch.Tensor:
     """同步音频转换方法"""
-    return torch.from_numpy(np.array(np.frombuffer(raw_audio, dtype=np.float32))).unsqueeze(0)
+    return torch.from_numpy(
+        np.array(np.frombuffer(raw_audio, dtype=np.float32))
+    ).unsqueeze(0)
 
-def convert_audio_tensor_to_bytes(tensor: torch.Tensor, format: str = None, sample_rate=24000) -> bytes:
+
+def convert_audio_tensor_to_bytes(
+    tensor: torch.Tensor, format: str = None, sample_rate=24000
+) -> bytes:
     """将音频Tensor转换为指定格式的字节流
 
     Args:
@@ -54,6 +60,7 @@ def convert_audio_tensor_to_bytes(tensor: torch.Tensor, format: str = None, samp
         case _:
             raise ValueError(f"Unsupported format: {format}")
 
+
 def _encode_wav(tensor: torch.Tensor, sr: int, bits: int) -> bytes:
     """编码WAV格式"""
     if bits == 16:
@@ -76,6 +83,7 @@ def _encode_wav(tensor: torch.Tensor, sr: int, bits: int) -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
+
 def _encode_pcm(tensor: torch.Tensor, bits: int) -> bytes:
     """编码原始PCM数据"""
     np_array = tensor.cpu().numpy()
@@ -89,6 +97,7 @@ def _encode_pcm(tensor: torch.Tensor, bits: int) -> bytes:
     else:
         raise ValueError("Only 16/32-bit PCM supported")
     return np_array.tobytes()
+
 
 def _encode_mp3(tensor: torch.Tensor, sr: int) -> bytes:
     """编码MP3格式"""
